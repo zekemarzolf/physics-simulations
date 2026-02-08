@@ -1,8 +1,19 @@
 class Gravity:
     G = 6.6743e-11
+    
     earthMass = 5.972e24
+    earthRadius = 6.378e6
+    earthSunDist = 1.496e11
+    earthVel = 30000
+    
     moonMass = 7.34767e22
-    moonDist = 384.4e6
+    moonEarthDist = 3.844e8
+    moonRadius = 1.736e6
+    
+    sunMass = 1.989e30
+    sunRadius = 6.96e8
+    
+    
 
 class FrameRates:
     int24 = 41.66666667
