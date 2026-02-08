@@ -2,98 +2,85 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import numpy as np
 import math
+from Constants import Gravity as g, FrameRates as FR
 
-class Mass:
+class Body:
     
-    def __init__(self, m, r, x, y, xVel=0, yVel=0):
+    def __init__(self, m, r, position, velocity=[0, 0]):
         self.mass = m
         self.radius = r
-        self.x = x
-        self.y = y
-        self.xVel = xVel
-        self.yVel = yVel
+        self.pos = np.array(position, dtype=float)
+        self.vel = np.array(velocity, dtype=float)
     
-    def moveMass(self, forceSum):
-        aX = forceSum.xAcc / self.mass
-        aY = forceSum.yAcc / self.mass
-        self.x += self.xVel * dt + 0.5* aX * (dt**2)
-        self.y += self.yVel * dt + 0.5* aY * (dt**2)
-        self.xVel += aX * dt
-        self.yVel += aY * dt
+    def moveBody(self, forceSum):
+        acc = np.divide(forceSum.force, self.mass)
+        self.pos += self.vel * dt + 0.5 * acc * (dt**2)
+        self.vel += acc * dt
 
 class Force:
     
-    def __init__(self, mass1, mass2):
-        xdiff = mass2.x - mass1.x
-        ydiff = mass2.y - mass1.y
-        r = math.sqrt(xdiff ** 2 + ydiff ** 2)
-        self.magnitude = (6.6743e-11 * mass1.mass * mass2.mass)/(r**2)
-        ratio = self.magnitude/r
-        self.xAcc = ratio * xdiff
-        self.yAcc = ratio * ydiff
+    def __init__(self, body1, body2):
+        d = np.subtract(body2.pos, body1.pos)
+        dist2 = np.sqrt(np.sum(d**2)) + eps
+        magnitude = (g.G * body1.mass * body2.mass)/(dist2**2)
+        self.force = magnitude * d / dist2
+        
 
 class ForceSum:
     
     def __init__(self):
-        self.xAcc = 0
-        self.yAcc = 0
+        self.force = [0, 0]
     
     def addForce(self, force):
-        self.xAcc += force.xAcc
-        self.yAcc += force.yAcc
+        self.force = np.add(self.force, force.force)
 
 class Frame:
     
-    def __init__(self, masses, frameNum):
-        self.forceNum = len(masses) - 1
+    def __init__(self, bodies, frameNum):
         self.order = frameNum
-        self.massList = masses.copy()
+        self.bodyList = []
         self.coordsList = []
         
-        if (frameNum != 0):
+        for body in bodies:
+            new_body = Body(body.mass, body.radius, body.pos.copy(), body.vel.copy())
+            self.bodyList.append(new_body)
             
-            for p in self.massList:
-                forces = self.massList.copy()
-                forces.remove(p)
-                self.sumOnP = ForceSum()
+        for b in self.bodyList:
+            forceSum = ForceSum()
+            forces = self.bodyList.copy()
+            forces.remove(b)
+            for f in forces:
+                new_force = Force(b, f)
+                forceSum.addForce(new_force)
+            b.moveBody(forceSum)
+            self.coordsList.append(b.pos)
                 
-                for f in forces:
-                    new_Force = Force(p, f)
-                    self.sumOnP.addForce(new_Force)
-                
-                p.moveMass(self.sumOnP)
-                
-            for p in self.massList:
-                self.coordsList.append((p.x, p.y))
-        
-        if (frameNum == 0):
-            for p in self.massList:
-                self.coordsList.append((p.x, p.y))
 
-def frameList(masses, num_frames):
+def frameList(bodies, num_frames):
     frames = []
-    current_masses = masses
+    current_bodies = bodies
     for i in range(num_frames):
-        frame = Frame(current_masses, i)
+        frame = Frame(current_bodies, i)
         frames.append(frame)
-        current_masses = frame.massList
+        current_bodies = frame.bodyList
     return frames
 
 dt = 3600
-a = Mass(5.972e24, 40, 0, 0, 0, 0)
-b = Mass(7.34767e22, 10, 384400000, 0, 0, 1022)
-masses = [a, b]
+eps = 1e3
+a = Body(g.earthMass, 40, [0, 0])
+b = Body(g.moonMass, 10, [g.moonDist, 0], [0, 0])
+bodies = [a, b]
 
 fig, ax = plt.subplots()
 ax.set_xlim(-500000000, 500000000)
 ax.set_ylim(-500000000, 500000000)
 
-frames = frameList(masses, 1000)
+frames = frameList(bodies, 1000)
 
 artists = []
 for frame in frames:
     coords = np.array(frame.coordsList)
-    sizes = np.array([mass.radius for mass in frame.massList])
+    sizes = np.array([body.radius for body in frame.bodyList])
     scatter = ax.scatter(coords[:, 0], coords[:, 1], s=sizes, color='black')
     artists.append([scatter])
 
@@ -101,14 +88,15 @@ for frame in frames:
 ani = animation.ArtistAnimation(
     fig,
     artists,
-    interval = 42,
+    interval = FR.int24,
     blit = True
 )
 
 plt.show()
 
 #Things to add next:
-# - Merging Logic
-# - Vectors with direction for mechanics calculations
 # - Velocity Verlet Algorithm
+# - Merging Logic
 # - THEN make a 3d version
+#    - VPython?
+# - GPU utilization

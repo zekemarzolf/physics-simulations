@@ -32,7 +32,7 @@ class Force:
         
         #magnitude calculation
         d = math.sqrt(xdiff ** 2 + ydiff ** 2)
-        self.magnitude = (9e9 * part1.charge * part2.charge)/(d**2)
+        self.magnitude = (9e9 * part1.charge * part2.charge)/(d**2 + .01)
         
         #separate into x and y
         ratio = self.magnitude/d
@@ -67,7 +67,6 @@ class AccelerationSum:
 class Frame:
     
     def __init__(self, particles, frameNum):
-        self.forceNum = len(particles) - 1
         self.order = frameNum
         self.partList = particles.copy()
         self.coordsList = []
