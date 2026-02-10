@@ -11,6 +11,7 @@ class Body:
         self.radius = r
         self.pos = np.array(position, dtype=float)
         self.vel = np.array(velocity, dtype=float)
+        self.remove = False
     
     def moveBody(self, forceSum):
         acc = np.divide(forceSum.force, self.mass)
@@ -48,6 +49,7 @@ class Frame:
                 
         for i, j in collisionCheck(self.bodyList, self.radii):
             mergeBodies(self.bodyList[i], self.bodyList[j], self.bodyList)
+        self.bodyList = [b for b in self.bodyList if not b.remove]
             
         for b in self.bodyList:
             forceSum = ForceSum()
@@ -75,8 +77,8 @@ def mergeBodies(body1, body2, list):
     mergedRadius = (body1.radius**3 + body2.radius**3)**(1/3)
     mergedVelocity = (body1.mass * body1.vel + body2.mass * body2.vel)/mergedMass
     mergedBody = Body(mergedMass, mergedRadius, body1.pos, mergedVelocity)
-    list.remove(body1)
-    list.remove(body2)
+    body1.remove = True
+    body2.remove = True
     list.append(mergedBody)
 
 def frameList(bodies, num_frames):
@@ -88,17 +90,24 @@ def frameList(bodies, num_frames):
         current_bodies = frame.bodyList
     return frames
 
-dt = 86400
-eps = 1e6
-radScale = 1e-6
-sun = Body(g.sunMass, g.sunRadius, [0, 0])
-a = Body(g.earthMass, g.earthRadius, [g.earthSunDist, 0], [0, g.earthVel])
-b = Body(g.moonMass, g.moonRadius * 10, [g.moonEarthDist + g.earthSunDist, 0], [0, 1022 + g.earthVel])
-bodies = [a, b, sun]
+dt = .5
+eps = 20
+radScale = 10
+axlim1 = 1000
+axlim2 = axlim1 * -1
+
+#sun = Body(g.sunMass, g.sunRadius, [0, 0])
+#earth = Body(g.earthMass, g.earthRadius, [g.earthSunDist, 0], [0, g.earthVel])
+#moon = Body(g.moonMass, g.moonRadius * 10, [g.moonEarthDist + g.earthSunDist, 0], [0, 1022 + g.earthVel])
+a = Body(1e15, 10, [0, 0])
+b = Body(1e14, 5, [500, 0], [0, 0])
+c = Body(1e14, 5, [-500, 0], [0, 0])
+
+bodies = [a, b, c]
 
 fig, ax = plt.subplots()
-ax.set_xlim(-2e11, 2e11)
-ax.set_ylim(-2e11, 2e11)
+ax.set_xlim(axlim2, axlim1)
+ax.set_ylim(axlim2, axlim1)
 
 frames = frameList(bodies, 1000)
 
@@ -109,11 +118,10 @@ for frame in frames:
     scatter = ax.scatter(coords[:, 0], coords[:, 1], s=sizes, color='black')
     artists.append([scatter])
 
-
 ani = animation.ArtistAnimation(
     fig,
     artists,
-    interval = 100,
+    interval = FR.int120,
     blit = True
 )
 
@@ -122,5 +130,6 @@ plt.show()
 #Things to add next:
 # - Velocity Verlet Algorithm
 # - THEN make a 3d version
-#    - VPython?
+#    - VisPy
+#    - PyVista
 # - GPU utilization
