@@ -11,7 +11,7 @@ class Body:
         self.radius = r
         self.pos = np.array(position, dtype=float)
         self.vel = np.array(velocity, dtype=float)
-        self.remove = False
+        self.merged = False
     
     def moveBody(self, forceSum):
         acc = np.divide(forceSum.force, self.mass)
@@ -47,9 +47,9 @@ class Frame:
             self.bodyList.append(new_body)
             self.radii.append(new_body.radius)
                 
-        for i, j in collisionCheck(self.bodyList, self.radii):
-            mergeBodies(self.bodyList[i], self.bodyList[j], self.bodyList)
-        self.bodyList = [b for b in self.bodyList if not b.remove]
+        for i in collisionCheck(self.bodyList, self.radii):
+            mergeBodies(i, self.bodyList)
+        self.bodyList = [b for b in self.bodyList if not b.merged]
             
         for b in self.bodyList:
             forceSum = ForceSum()
@@ -66,20 +66,42 @@ def collisionCheck(bodies, radii):
     N = positions.shape[0]
     collisions = []
     for i in range(N):
+        if any(bodies[i] is b for l in collisions for b in l):
+            continue
+        bodiesMerged = [bodies[i]]
         for j in range(i + 1, N):
             dist = np.linalg.norm(positions[j] - positions[i])
             if dist < radii[i] + radii[j]:
-                collisions.append((i, j))
+                bodiesMerged.append(bodies[j])
+        if len(bodiesMerged) == 1:
+            continue
+        collisions.append(bodiesMerged)
     return collisions
                 
-def mergeBodies(body1, body2, list):
-    mergedMass = body1.mass + body2.mass
-    mergedRadius = (body1.radius**3 + body2.radius**3)**(1/3)
-    mergedVelocity = (body1.mass * body1.vel + body2.mass * body2.vel)/mergedMass
-    mergedBody = Body(mergedMass, mergedRadius, body1.pos, mergedVelocity)
-    body1.remove = True
-    body2.remove = True
-    list.append(mergedBody)
+def mergeBodies(m, l):
+    mergedMass = 0
+    for b in m:
+        mergedMass += b.mass
+    
+    mergedRadius = 0
+    for b in m:
+        mergedRadius += b.radius**3
+    mergedRadius = mergedRadius**(1/3)
+    
+    mergedVelocity = np.array([0, 0], dtype=float)
+    for b in m:
+        mergedVelocity += b.mass*b.vel
+    mergedVelocity /= mergedMass
+    
+    mergedPos = np.array([0, 0], dtype=float)
+    for b in m:
+        mergedPos += b.pos*b.mass
+    mergedPos /= mergedMass
+    
+    mergedBody = Body(mergedMass, mergedRadius, mergedPos, mergedVelocity)
+    for b in m:
+        b.merged = True
+    l.append(mergedBody)
 
 def frameList(bodies, num_frames):
     frames = []
@@ -90,7 +112,7 @@ def frameList(bodies, num_frames):
         current_bodies = frame.bodyList
     return frames
 
-dt = .5
+dt = .05
 eps = 20
 radScale = 10
 axlim1 = 1000
@@ -109,7 +131,7 @@ fig, ax = plt.subplots()
 ax.set_xlim(axlim2, axlim1)
 ax.set_ylim(axlim2, axlim1)
 
-frames = frameList(bodies, 1000)
+frames = frameList(bodies, 2000)
 
 artists = []
 for frame in frames:
@@ -121,14 +143,15 @@ for frame in frames:
 ani = animation.ArtistAnimation(
     fig,
     artists,
-    interval = FR.int120,
+    interval = FR.int1000,
     blit = True
 )
 
 plt.show()
 
 #Things to add next:
-# - Velocity Verlet Algorithm
+# - Merge with lists, not 2 bodies
+# - Smarter Collision Detections
 # - THEN make a 3d version
 #    - VisPy
 #    - PyVista
