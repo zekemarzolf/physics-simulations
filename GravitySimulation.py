@@ -114,43 +114,48 @@ def frameList(bodies, num_frames):
 
 dt = .05
 eps = 20
-radScale = 10
+sizeScale = .1
 axlim1 = 1000
 axlim2 = axlim1 * -1
 
 #sun = Body(g.sunMass, g.sunRadius, [0, 0])
 #earth = Body(g.earthMass, g.earthRadius, [g.earthSunDist, 0], [0, g.earthVel])
 #moon = Body(g.moonMass, g.moonRadius * 10, [g.moonEarthDist + g.earthSunDist, 0], [0, 1022 + g.earthVel])
-a = Body(1e15, 10, [0, 0])
-b = Body(1e14, 5, [500, 0], [0, 0])
-c = Body(1e14, 5, [-500, 0], [0, 0])
-
-bodies = [a, b, c]
+a = Body(1e17, 2, [-20, 0], [0, -5])
+j = Body(1e17, 2, [20, 0], [0, 5])
+b = Body(1e14, 5, [500, 0], [0, 100])
+c = Body(1e14, 5, [-500, 0], [0, -100])
+d = Body(1e14, 5, [0, 500], [-100, 0])
+e = Body(1e14, 5, [0, -500], [100, 0])
+f = Body(1e14, 5, [100, 0], [0, 200])
+g1 = Body(1e14, 5, [-100, 0], [0, -200])
+h = Body(1e14, 5, [0, 100], [-200, 0])
+i = Body(1e14, 5, [0, -100], [200, 0])
+bodies = [a, b, c, d, e, f, g1, h, i, j]
 
 fig, ax = plt.subplots()
 ax.set_xlim(axlim2, axlim1)
 ax.set_ylim(axlim2, axlim1)
 
-frames = frameList(bodies, 2000)
+frames = frameList(bodies, 5000)
 
 artists = []
 for frame in frames:
     coords = np.array(frame.coordsList)
-    sizes = np.array([body.radius * radScale for body in frame.bodyList])
+    sizes = np.array([(body.radius**2)*6.28*sizeScale for body in frame.bodyList])
     scatter = ax.scatter(coords[:, 0], coords[:, 1], s=sizes, color='black')
     artists.append([scatter])
 
 ani = animation.ArtistAnimation(
     fig,
     artists,
-    interval = FR.int1000,
+    interval = 5,
     blit = True
 )
 
 plt.show()
 
 #Things to add next:
-# - Merge with lists, not 2 bodies
 # - Smarter Collision Detections
 # - THEN make a 3d version
 #    - VisPy
