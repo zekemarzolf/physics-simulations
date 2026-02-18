@@ -136,7 +136,7 @@ fig, ax = plt.subplots(figsize=(10, 10))
 ax.set_xlim(axlim2, axlim1)
 ax.set_ylim(axlim2, axlim1)
 
-frames = frameList(bodies, 5000)
+frames = frameList(bodies, 1000)
 
 artists = []
 for frame in frames:
@@ -148,7 +148,7 @@ for frame in frames:
 ani = animation.ArtistAnimation(
     fig,
     artists,
-    interval = 5,
+    interval = FR.int60,
     blit = True
 )
 
