@@ -1,21 +1,28 @@
 import sys
 import numpy as np
-import numba as nb
+from numba import njit
 from vispy import app, scene
 from vispy.scene import visuals
 from Constants import Gravity as g
 from vispy.visuals.transforms import STTransform
 
+@njit
 def build_octree(positions, masses, node_centers, node_sizes, node_masses, node_coms, node_children, node_particle, n_nodes):
 
-    node_centers[0, 0] = 0.5
-    node_centers[0, 1] = 0.5
-    node_centers[0, 2] = 0.5
+    # compute morton codes
+    m_positions = np.zeros(N, dType=np.uint64)
+    for idx, pos in positions:
+        code=0
+        for j in range(16):
+            code |= ((pos[0] & (1 << j)) << (2*j)) | \
+                    ((pos[1] & (1 << j)) << (2*j+1)) | \
+                    ((pos[2] & (1 << j)) << (2*j+2))
+        m_positions[idx] = code
+    
+    node_centers[0,:] = 0.5
     node_sizes[0]   = 1.0
     node_masses[0]  = 0.0
-    node_coms[0, 0] = 0.0
-    node_coms[0, 1] = 0.0
-    node_coms[0, 2] = 0.0
+    node_coms[0,:] = 0.0
     node_children[0] = -1   # no children yet
     node_particle[0] = -1   # not a leaf yet
     n_nodes[0] = 1
@@ -67,6 +74,8 @@ if __name__ == '__main__':
     app.run()
 
 ### TO DO:
-# Fun gpu stuff!!
+# Barnes-Hut Implementation
+## Morton Codes to Sort
+## Octree Hierarchy
+## Acceleration Computation via Octree
 # Merging
-# Barnes-Hut Algorithm
