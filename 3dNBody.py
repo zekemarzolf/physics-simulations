@@ -14,6 +14,9 @@ N     = 500
 eps   = .5
 scale = 2
 mass = 1e5
+BASE_MASS = mass
+rad = .02
+BASE_RAD  = rad
 THETA = 0.5
 GRID  = 1024
 
@@ -34,15 +37,17 @@ def range_mass_com(lo, hi, prefix_mass, prefix_mpos):
     return mass, com
 
 @njit
-def collect_interactions(q_idx, sorted_codes, sorted_positions, prefix_mass, prefix_mpos, theta):
-    N = sorted_positions.shape[0]
+def collect_interactions(q_idx, sorted_codes, sorted_positions, prefix_mass, prefix_mpos, sorted_radii, extent, theta):
+    num = sorted_positions.shape[0]
     count = 0
-    out_masses = np.zeros(8*N)
-    out_coms = np.zeros((8*N, 3))
+    out_masses = np.zeros(8*num)
+    out_coms = np.zeros((8*num, 3))
+    out_collisions = np.empty(64, dtype=nb.int64)
+    collision_count = 0
     
     stack = np.empty((1024, 3), dtype=nb.int64)
     stack[0,0] = 0
-    stack[0,1] = N
+    stack[0,1] = num
     stack[0,2] = 0
     top = 1
     
@@ -56,22 +61,26 @@ def collect_interactions(q_idx, sorted_codes, sorted_positions, prefix_mass, pre
         if lo >= hi:
             continue
         
-        # only 1 particle
-        if hi - lo == 1:
-            if lo != q_idx:
-                out_masses[count] = prefix_mass[hi] - prefix_mass[lo]
-                out_coms[count, 0] = sorted_positions[lo, 0]
-                out_coms[count, 1] = sorted_positions[lo, 1]
-                out_coms[count, 2] = sorted_positions[lo, 2]
-                count += 1
-            continue
-        
         node_mass, node_com = range_mass_com(lo, hi, prefix_mass, prefix_mpos)
         size = 1/(2**depth)
         dx = node_com[0] - sorted_positions[q_idx, 0]
         dy = node_com[1] - sorted_positions[q_idx, 1]
         dz = node_com[2] - sorted_positions[q_idx, 2]
         dist = np.sqrt(dx**2 + dy**2 + dz**2)
+        
+        # only 1 particle
+        if hi - lo == 1:
+            if lo != q_idx:
+                # check for collision
+                if dist < (sorted_radii[q_idx] + sorted_radii[lo])/extent:
+                    out_collisions[collision_count] = lo
+                    collision_count += 1
+                out_masses[count] = prefix_mass[hi] - prefix_mass[lo]
+                out_coms[count, 0] = sorted_positions[lo, 0]
+                out_coms[count, 1] = sorted_positions[lo, 1]
+                out_coms[count, 2] = sorted_positions[lo, 2]
+                count += 1
+            continue
         
         if dist > 1e-10 and size/dist < theta:
             out_masses[count] = node_mass
@@ -98,7 +107,7 @@ def collect_interactions(q_idx, sorted_codes, sorted_positions, prefix_mass, pre
                     stack[top, 2] = depth + 1
                     top += 1
             
-    return out_masses, out_coms, count
+    return out_masses, out_coms, count, out_collisions, collision_count
 
 @njit
 def _searchsorted(codes, lo, hi, val):
@@ -112,12 +121,14 @@ def _searchsorted(codes, lo, hi, val):
     return left
 
 @njit
-def _compute_acc(sorted_pos, sorted_codes, prefix_mass, prefix_mpos, theta, eps, extent):
-    N = sorted_pos.shape[0]
-    acc = np.zeros((N, 3))
+def _compute_acc(sorted_pos, sorted_codes, prefix_mass, prefix_mpos, sorted_radii, theta, eps, extent):
+    num = sorted_pos.shape[0]
+    acc = np.zeros((num, 3))
+    collisions = np.full((num * 64, 2), -1, dtype=nb.int64)
+    n_coll = 0
     
-    for i in range(N):
-        out_masses, out_coms, count = collect_interactions(i, sorted_codes, sorted_pos, prefix_mass, prefix_mpos, theta)
+    for i in range(num):
+        out_masses, out_coms, count, out_collisions, collision_count = collect_interactions(i, sorted_codes, sorted_pos, prefix_mass, prefix_mpos, sorted_radii, extent, theta)
         ax = ay = az = 0.0
         for j in range(count):
             dx  = out_coms[j, 0] - sorted_pos[i, 0]
@@ -132,23 +143,85 @@ def _compute_acc(sorted_pos, sorted_codes, prefix_mass, prefix_mpos, theta, eps,
         acc[i, 0] = ax
         acc[i, 1] = ay
         acc[i, 2] = az
-    return acc/(extent**2)
+        for k in range(collision_count):
+            j = out_collisions[k]
+            if i < j:
+                collisions[n_coll, 0] = i
+                collisions[n_coll, 1] = j
+                n_coll += 1
+    return acc/(extent**2), collisions[:n_coll]
     
-def bh_acc_calc(pos, mass, theta, eps):
+def bh_acc_calc(pos, mass, rad, theta, eps):
     norm_pos, mins, extent = mort.normalize_positions(pos)
     codes = mort.morton_codes(norm_pos, GRID)
     sort_idx = np.argsort(codes)
-    
     sorted_codes = codes[sort_idx]
     sorted_pos   = norm_pos[sort_idx]
     sorted_mass  = mass[sort_idx]
-    
+    sorted_radii = rad[sort_idx]
     prefix_mass, prefix_mpos = prefix_aggregates(sorted_mass, sorted_pos)
-    acc_sorted = _compute_acc(sorted_pos, sorted_codes, prefix_mass, prefix_mpos, theta, eps, extent)
-    
+    acc_sorted, collisions = _compute_acc(
+    sorted_pos, sorted_codes, prefix_mass, prefix_mpos, sorted_radii, theta, eps, extent)
     unsort_idx = np.argsort(sort_idx)
-    return acc_sorted[unsort_idx]
+    if len(collisions) > 0:
+        valid = collisions[:,0] >= 0 
+        collisions[valid, 0] = sort_idx[collisions[valid, 0]]
+        collisions[valid, 1] = sort_idx[collisions[valid, 1]]
+        return acc_sorted[unsort_idx], collisions[valid]
+    return acc_sorted[unsort_idx], collisions
     
+def resolve_collisions(p, v, m, r, collisions):
+    if len(collisions) == 0:
+        return p, v, m, r
+    num = len(m)
+    parent = np.arange(num)
+    rank = np.zeros(num, dtype=np.int64)
+    
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i, j):
+        ri, rj = find(i), find(j)
+        if ri == rj:
+            return
+        if rank[ri] < rank[rj]:
+            ri, rj = rj, ri
+        parent[rj] = ri
+        if rank[ri] == rank[rj]:
+            rank[ri] += 1
+    
+    for k in range(len(collisions)):
+        union(collisions[k, 0], collisions[k, 1])
+    
+    new_p = p.copy()
+    new_v = v.copy()
+    new_m = m.copy()
+    new_r = r.copy()
+    alive = np.ones(num, dtype=bool)
+    
+    for i in range(num):
+        if not alive[i]:
+            continue
+        root = find(i)
+        if root == i:
+            continue
+        
+        mi   = new_m[root]
+        mj   = new_m[i]
+        mtot = mi + mj
+
+        new_v[root] = (mi * new_v[root] + mj * new_v[i]) / mtot
+        new_p[root] = (mi * new_p[root] + mj * new_p[i]) / mtot
+        new_m[root] = mtot
+
+        new_r[root] = BASE_RAD * (new_m[root] / BASE_MASS) ** (1/3)
+
+        alive[i] = False
+    
+    return new_p[alive], new_v[alive], new_m[alive], new_r[alive]
 
 def vec_acc_calc(p, mass):
     displacements = p[None,:,:] - p[:,None,:]
@@ -159,18 +232,20 @@ def vec_acc_calc(p, mass):
     accelerations = np.sum((massProd/r3)[...,None]*displacements, axis=1)
     return accelerations
 
-def verlet_step(p, v, mass, dt):
-    a = bh_acc_calc(p, mass, THETA, eps)
+def verlet_step(p, v, r, mass, dt):
+    a, _ = bh_acc_calc(p, mass, r, THETA, eps)
     new_p = p + v*dt + 0.5*a*dt**2
-    new_a = bh_acc_calc(new_p, mass, THETA, eps)
+    new_a, collisions = bh_acc_calc(new_p, mass, r, THETA, eps)
     new_v = v + 0.5*(a + new_a)*dt
-    return new_p, new_v
+    new_p, new_v, new_m, new_r = resolve_collisions(new_p, new_v, mass, r, collisions)
+    return new_p, new_v, new_m, new_r
 
 global positions, velocities, masses
 positions = np.random.normal(size=(N, 3), scale=scale)
 #velocities = np.zeros((N, 3))
 velocities = np.random.normal(size=(N, 3), scale=0.01)
 masses = np.full((N), mass)
+radii = np.full((N), rad)
 
 canvas = scene.SceneCanvas(keys='interactive', size=(1000, 1000), show=True)
 view = canvas.central_widget.add_view()
@@ -182,8 +257,8 @@ view.camera = 'turntable'
 view.camera.center = np.mean(positions, axis=0)
 
 def update(ev):
-    global positions, velocities, masses
-    positions, velocities = verlet_step(positions, velocities, masses, dt)
+    global positions, velocities, masses, radii
+    positions, velocities, masses, radii = verlet_step(positions, velocities, radii, masses, dt)
     scatter.set_data(positions)
 
 timer = app.Timer(interval=.01, connect=update, start=True)
@@ -192,4 +267,4 @@ if __name__ == '__main__':
     app.run()
 
 ### TO DO:
-# Merging
+# Make Collision Resolution Function
