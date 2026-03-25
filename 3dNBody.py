@@ -15,7 +15,7 @@ eps   = .5
 scale = 2
 mass = 1e5
 BASE_MASS = mass
-rad = .02
+rad = .05
 BASE_RAD  = rad
 THETA = 0.5
 GRID  = 1024
@@ -73,8 +73,9 @@ def collect_interactions(q_idx, sorted_codes, sorted_positions, prefix_mass, pre
             if lo != q_idx:
                 # check for collision
                 if dist < (sorted_radii[q_idx] + sorted_radii[lo])/extent:
-                    out_collisions[collision_count] = lo
-                    collision_count += 1
+                    if collision_count < 63:
+                        out_collisions[collision_count] = lo
+                        collision_count += 1
                 out_masses[count] = prefix_mass[hi] - prefix_mass[lo]
                 out_coms[count, 0] = sorted_positions[lo, 0]
                 out_coms[count, 1] = sorted_positions[lo, 1]
@@ -176,6 +177,7 @@ def resolve_collisions(p, v, m, r, collisions):
     num = len(m)
     parent = np.arange(num)
     rank = np.zeros(num, dtype=np.int64)
+    total_momentum_before = np.sum(m[:,None] * v, axis=0)
     
     def find(i):
         while parent[i] != i:
@@ -209,17 +211,20 @@ def resolve_collisions(p, v, m, r, collisions):
         if root == i:
             continue
         
-        mi   = new_m[root]
-        mj   = new_m[i]
-        mtot = mi + mj
+        mi   = new_m[i]
+        mr   = new_m[root]
+        mtot = mi + mr
 
-        new_v[root] = (mi * new_v[root] + mj * new_v[i]) / mtot
-        new_p[root] = (mi * new_p[root] + mj * new_p[i]) / mtot
+        new_v[root] = (mr * new_v[root] + mi * new_v[i]) / mtot
+        new_p[root] = (mr * new_p[root] + mi * new_p[i]) / mtot
         new_m[root] = mtot
 
         new_r[root] = BASE_RAD * (new_m[root] / BASE_MASS) ** (1/3)
 
         alive[i] = False
+        
+    total_momentum_after = np.sum(new_m[alive,None] * new_v[alive], axis=0)
+    print(f"momentum before: {total_momentum_before}, after: {total_momentum_after}")
     
     return new_p[alive], new_v[alive], new_m[alive], new_r[alive]
 
@@ -237,19 +242,21 @@ def verlet_step(p, v, r, mass, dt):
     new_p = p + v*dt + 0.5*a*dt**2
     new_a, collisions = bh_acc_calc(new_p, mass, r, THETA, eps)
     new_v = v + 0.5*(a + new_a)*dt
+    com_vel = np.sum(mass[:,None] * new_v, axis=0) / np.sum(mass)
+    new_v -= com_vel
     new_p, new_v, new_m, new_r = resolve_collisions(new_p, new_v, mass, r, collisions)
     return new_p, new_v, new_m, new_r
 
 global positions, velocities, masses
 positions = np.random.normal(size=(N, 3), scale=scale)
-#velocities = np.zeros((N, 3))
-velocities = np.random.normal(size=(N, 3), scale=0.01)
+velocities = np.zeros((N, 3))
+#velocities = np.random.normal(size=(N, 3), scale=0.01)
 masses = np.full((N), mass)
 radii = np.full((N), rad)
 
 canvas = scene.SceneCanvas(keys='interactive', size=(1000, 1000), show=True)
 view = canvas.central_widget.add_view()
-scatter = visuals.Markers(pos=positions, face_color='w', size=10, edge_width=0)
+scatter = visuals.Markers(pos=positions, face_color='w', size=radii, edge_width=0, scaling='scene')
 axis = visuals.XYZAxis(parent=view.scene)
 axis.transform = STTransform(scale=(1, 1, 1))
 view.add(scatter)
@@ -259,7 +266,7 @@ view.camera.center = np.mean(positions, axis=0)
 def update(ev):
     global positions, velocities, masses, radii
     positions, velocities, masses, radii = verlet_step(positions, velocities, radii, masses, dt)
-    scatter.set_data(positions)
+    scatter.set_data(positions, face_color='w', size=radii, edge_width=0)
 
 timer = app.Timer(interval=.01, connect=update, start=True)
 
@@ -267,4 +274,4 @@ if __name__ == '__main__':
     app.run()
 
 ### TO DO:
-# Make Collision Resolution Function
+# Elastic and other types of collisions
