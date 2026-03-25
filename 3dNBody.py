@@ -10,8 +10,8 @@ from vispy.visuals.transforms import STTransform
 
 G     = 6.674e-11
 dt    = 1
-N     = 500
-eps   = .5
+N     = 300
+eps   = 0.5
 scale = 2
 mass = 1e5
 BASE_MASS = mass
@@ -19,6 +19,7 @@ rad = .05
 BASE_RAD  = rad
 THETA = 0.5
 GRID  = 1024
+rad_scale = 1.3
 
 def prefix_aggregates(sorted_masses, sorted_positions):
     num = len(sorted_positions)
@@ -171,7 +172,7 @@ def bh_acc_calc(pos, mass, rad, theta, eps):
         return acc_sorted[unsort_idx], collisions[valid]
     return acc_sorted[unsort_idx], collisions
     
-def resolve_collisions(p, v, m, r, collisions):
+def resolve_collisions_inelastic(p, v, m, r, collisions):
     if len(collisions) == 0:
         return p, v, m, r
     num = len(m)
@@ -242,9 +243,9 @@ def verlet_step(p, v, r, mass, dt):
     new_p = p + v*dt + 0.5*a*dt**2
     new_a, collisions = bh_acc_calc(new_p, mass, r, THETA, eps)
     new_v = v + 0.5*(a + new_a)*dt
-    com_vel = np.sum(mass[:,None] * new_v, axis=0) / np.sum(mass)
+    com_vel = np.sum(mass[:,None] * new_v, axis=0) / np.sum(mass) - init_com_vel
     new_v -= com_vel
-    new_p, new_v, new_m, new_r = resolve_collisions(new_p, new_v, mass, r, collisions)
+    new_p, new_v, new_m, new_r = resolve_collisions_inelastic(new_p, new_v, mass, r, collisions)
     return new_p, new_v, new_m, new_r
 
 global positions, velocities, masses
@@ -253,10 +254,11 @@ velocities = np.zeros((N, 3))
 #velocities = np.random.normal(size=(N, 3), scale=0.01)
 masses = np.full((N), mass)
 radii = np.full((N), rad)
+init_com_vel = com_vel = np.sum(masses[:,None] * velocities, axis=0) / np.sum(masses)
 
 canvas = scene.SceneCanvas(keys='interactive', size=(1000, 1000), show=True)
 view = canvas.central_widget.add_view()
-scatter = visuals.Markers(pos=positions, face_color='w', size=radii, edge_width=0, scaling='scene')
+scatter = visuals.Markers(pos=positions, face_color='w', size=radii*rad_scale, edge_width=0, scaling='scene')
 axis = visuals.XYZAxis(parent=view.scene)
 axis.transform = STTransform(scale=(1, 1, 1))
 view.add(scatter)
@@ -266,7 +268,7 @@ view.camera.center = np.mean(positions, axis=0)
 def update(ev):
     global positions, velocities, masses, radii
     positions, velocities, masses, radii = verlet_step(positions, velocities, radii, masses, dt)
-    scatter.set_data(positions, face_color='w', size=radii, edge_width=0)
+    scatter.set_data(positions, face_color='w', size=radii*rad_scale, edge_width=0)
 
 timer = app.Timer(interval=.01, connect=update, start=True)
 
