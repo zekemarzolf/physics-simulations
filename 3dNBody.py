@@ -1,8 +1,10 @@
 import sys
+import cupy as cp
 import numpy as np
 import numba as nb
 import MortonEncoder as mort
 from numba import njit
+from numba import cuda
 from vispy import app, scene
 from vispy.scene import visuals
 from Constants import Gravity as g
@@ -10,8 +12,8 @@ from vispy.visuals.transforms import STTransform
 
 G     = 6.674e-11
 dt    = 1
-N     = 300
-eps   = 0.5
+N     = 500
+eps   = 0.75
 scale = 2
 mass = 1e5
 BASE_MASS = mass
@@ -29,7 +31,7 @@ def prefix_aggregates(sorted_masses, sorted_positions):
     prefix_mpos[1:] = np.cumsum(sorted_masses[:, None] * sorted_positions, axis=0)
     return prefix_mass, prefix_mpos
 
-@njit 
+@njit
 def range_mass_com(lo, hi, prefix_mass, prefix_mpos):
     mass = prefix_mass[hi] - prefix_mass[lo]
     if mass < 1e-30:
@@ -231,44 +233,57 @@ def resolve_collisions_inelastic(p, v, m, r, collisions):
 
 def vec_acc_calc(p, mass):
     displacements = p[None,:,:] - p[:,None,:]
-    sqDist = np.sum(displacements**2, axis=2) + eps**2
+    sqDist = cp.sum(displacements**2, axis=2) + eps**2
     r3 = sqDist**1.5
-    np.fill_diagonal(r3, np.inf)
+    cp.fill_diagonal(r3, cp.inf)
     massProd = G * mass[None,:]
-    accelerations = np.sum((massProd/r3)[...,None]*displacements, axis=1)
+    accelerations = cp.sum((massProd/r3)[...,None]*displacements, axis=1)
     return accelerations
 
 def verlet_step(p, v, r, mass, dt):
-    a, _ = bh_acc_calc(p, mass, r, THETA, eps)
-    new_p = p + v*dt + 0.5*a*dt**2
-    new_a, collisions = bh_acc_calc(new_p, mass, r, THETA, eps)
-    new_v = v + 0.5*(a + new_a)*dt
-    com_vel = np.sum(mass[:,None] * new_v, axis=0) / np.sum(mass) - init_com_vel
-    new_v -= com_vel
-    new_p, new_v, new_m, new_r = resolve_collisions_inelastic(new_p, new_v, mass, r, collisions)
+    p_cpu = cp.asnumpy(p)
+    v_cpu = cp.asnumpy(v)
+    r_cpu = cp.asnumpy(r)
+    m_cpu = cp.asnumpy(mass)
+    
+    a_cpu, _ = bh_acc_calc(p_cpu, m_cpu, r_cpu, THETA, eps)
+    new_p_cpu = p_cpu + v_cpu*dt + 0.5*a_cpu*dt**2
+    new_a_cpu, collisions = bh_acc_calc(new_p_cpu, m_cpu, r_cpu, THETA, eps)
+    new_v_cpu = v_cpu + 0.5*(a_cpu + new_a_cpu)*dt
+    
+    com_vel = np.sum(m_cpu[:,None] * new_v_cpu, axis=0) / np.sum(m_cpu)
+    new_v_cpu -= com_vel
+
+    new_p_cpu, new_v_cpu, new_m_cpu, new_r_cpu = resolve_collisions_inelastic(new_p_cpu, new_v_cpu, m_cpu, r_cpu, collisions)
+    
+    new_p = cp.asarray(new_p_cpu)
+    new_v = cp.asarray(new_v_cpu)
+    new_m = cp.asarray(new_m_cpu)
+    new_r = cp.asarray(new_r_cpu)
+    
     return new_p, new_v, new_m, new_r
 
 global positions, velocities, masses
-positions = np.random.normal(size=(N, 3), scale=scale)
-velocities = np.zeros((N, 3))
-#velocities = np.random.normal(size=(N, 3), scale=0.01)
-masses = np.full((N), mass)
-radii = np.full((N), rad)
-init_com_vel = com_vel = np.sum(masses[:,None] * velocities, axis=0) / np.sum(masses)
+positions = cp.random.normal(size=(N, 3), scale=scale)
+velocities = cp.zeros((N, 3))
+#velocities = cp.random.normal(size=(N, 3), scale=0.01)
+masses = cp.full((N), mass)
+radii = cp.full((N), rad)
+init_com_vel = com_vel = cp.sum(masses[:,None] * velocities, axis=0) / cp.sum(masses)
 
 canvas = scene.SceneCanvas(keys='interactive', size=(1000, 1000), show=True)
 view = canvas.central_widget.add_view()
-scatter = visuals.Markers(pos=positions, face_color='w', size=radii*rad_scale, edge_width=0, scaling='scene')
+scatter = visuals.Markers(pos=cp.asnumpy(positions), face_color='w', size=cp.asnumpy(radii*rad_scale), edge_width=0, scaling='scene')
 axis = visuals.XYZAxis(parent=view.scene)
 axis.transform = STTransform(scale=(1, 1, 1))
 view.add(scatter)
 view.camera = 'turntable'
-view.camera.center = np.mean(positions, axis=0)
+view.camera.center = np.mean(cp.asnumpy(positions), axis=0)
 
 def update(ev):
     global positions, velocities, masses, radii
     positions, velocities, masses, radii = verlet_step(positions, velocities, radii, masses, dt)
-    scatter.set_data(positions, face_color='w', size=radii*rad_scale, edge_width=0)
+    scatter.set_data(cp.asnumpy(positions), face_color='w', size=cp.asnumpy(radii*rad_scale), edge_width=0)
 
 timer = app.Timer(interval=.01, connect=update, start=True)
 
@@ -276,4 +291,5 @@ if __name__ == '__main__':
     app.run()
 
 ### TO DO:
+# Use CUDA.jit to accelerate stuff w/ cupy
 # Elastic and other types of collisions
