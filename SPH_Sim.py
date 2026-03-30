@@ -24,20 +24,26 @@ h       = 1
 THETA   = 0.5
 GRID    = 1024
 
-global r, rho, v
 r = np.random.normal(size=(N, 3), scale=scale)
 rho = np.full((N), rho0)
 v = np.random.normal(size=(N, 3), scale=v_scale)
 
 def collect_interactions():
     
+    
+    return interactions, interaction_count, grav_masses, grav_coms, grav_count
 
-def acc_interact():
+def fij_interact():
     
 
-def acc_grav():
+def fij_grav():
+
+
+def density():
+    
 
 def verlet_step(r, rho, v, dt):
+    
     
 
 canvas = scene.SceneCanvas(keys='interactive', size=(1000, 1000), show=True)
