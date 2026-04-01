@@ -13,22 +13,22 @@ from vispy.visuals.transforms import STTransform
 
 G       = 6.674e-11
 dt      = 1
-N       = 500
+N       = 50
 EPS     = 0.75
 scale   = 1
 v_scale = 0
 rho0    = 1
 mass    = 1
-k       = 1
-mu      = 1
-h       = 1
+K       = 1
+MU      = 1
+H       = 1
 THETA   = 0.5
 GRID    = 1024
 
-m = np.full((N), mass)
-r = np.random.normal(size=(N, 3), scale=scale)
+masses = np.full((N), mass)
+positions = np.random.normal(size=(N, 3), scale=scale)
 rho = np.full((N), rho0)
-v = np.random.normal(size=(N, 3), scale=v_scale)
+velocities = np.random.normal(size=(N, 3), scale=v_scale)
 
 @cuda.jit(device=True)
 def range_mass_com(lo, hi, prefix_mass, prefix_mpos):
@@ -52,9 +52,7 @@ def _searchsorted(codes, lo, hi, val):
     return left
 
 @cuda.jit(device=True)
-def collect_interactions(i, sorted_codes, sorted_positions, prefix_mass, prefix_mpos, theta, h_norm,
-                         # output arrays
-                         grav_coms, grav_masses, neighbor_list):
+def collect_interactions(i, sorted_codes, sorted_positions, prefix_mass, prefix_mpos, theta, h_norm, grav_coms, grav_masses, neighbor_list):
     num = sorted_positions.shape[0]
     grav_count = 0
     neighbor_count = 0
@@ -125,73 +123,130 @@ def collect_interactions(i, sorted_codes, sorted_positions, prefix_mass, prefix_
     return grav_count, neighbor_count
 
 @cuda.jit
-def collect_all_interactions(sorted_codes, sorted_positions, prefix_mass, prefix_mpos, extent, theta, h_norm,
-                             grav_coms, grav_masses, grav_counts, neighbor_list, neighbor_counts):
+def collect_all_interactions(sorted_codes, sorted_positions, prefix_mass, prefix_mpos, extent, theta, h_norm, grav_coms, grav_masses, grav_counts, neighbor_list, neighbor_counts):
     i = cuda.grid(1)
     if i >= sorted_positions.shape[0]:
         return
     
-    grav_count, neighbor_count = collect_interactions(
-        i, sorted_codes, sorted_positions, prefix_mass, prefix_mpos, theta, h_norm,
-        grav_coms[i], grav_masses[i], neighbor_list[i])
+    grav_count, neighbor_count = collect_interactions(i, sorted_codes, sorted_positions, prefix_mass, prefix_mpos, theta, h_norm, grav_coms[i], grav_masses[i], neighbor_list[i])
     grav_counts[i] = grav_count
     neighbor_counts[i] = neighbor_count
 
 @cuda.jit
-def f_interact(r, v, rho, m, q, mu, k, rho0, h):
+def f_interact(positions, velocities, rho, pressures, masses, norm_dist, mu, h, neighbor_list, neighbor_counts, interaction_forces):
     i = cuda.grid(1)
-    if i >= r.shape[0]:
+    if i >= positions.shape[0]:
         return
     
-    return
+    force_x = 0.0
+    force_y = 0.0
+    force_z = 0.0
+    C = -45 / (3.14159 * h**6)
+    
+    for n in range(neighbor_counts[i]):
+        j = neighbor_list[i, n]
+        
+        dx = positions[i, 0] - positions[j, 0]
+        dy = positions[i, 1] - positions[j, 1]
+        dz = positions[i, 2] - positions[j, 2]
+        dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+        dir_x = dx / dist
+        dir_y = dy / dist
+        dir_z = dz / dist
 
-def f_grav():
+        smoothing = 1.0 - norm_dist[i, j]
+        Cj = C * masses[j] * smoothing / rho[j]
 
-    return
+        pressure_term = pressures[i] / (rho[i]**2) + pressures[j] / (rho[j]**2)
+
+        vx_term = mu * smoothing * (velocities[j, 0] - velocities[i, 0])
+        vy_term = mu * smoothing * (velocities[j, 1] - velocities[i, 1])
+        vz_term = mu * smoothing * (velocities[j, 2] - velocities[i, 2])
+
+        force_x += Cj * (smoothing * pressure_term * dir_x + vx_term)
+        force_y += Cj * (smoothing * pressure_term * dir_y + vy_term)
+        force_z += Cj * (smoothing * pressure_term * dir_z + vz_term)
+
+    interaction_forces[i, 0] = force_x
+    interaction_forces[i, 1] = force_y
+    interaction_forces[i, 2] = force_z
 
 @cuda.jit
-def compute_densities(r, m, h, q, neighbor_list, neighbor_counts, densities):
+def f_grav(positions, masses, eps, extent, grav_coms, grav_masses, grav_counts, grav_forces):
     i = cuda.grid(1)
-    if i >= r.shape[0]:
+    if i >= positions.shape[0]:
+        return
+    
+    force_x = 0.0
+    force_y = 0.0
+    force_z = 0.0
+    C = -45 / (3.14159 * h**6)
+    
+    for n in range(grav_counts[i]):
+        j = grav_coms[i, n]
+        
+        dx = positions[i, 0] - positions[j, 0]
+        dy = positions[i, 1] - positions[j, 1]
+        dz = positions[i, 2] - positions[j, 2]
+        r2  = dx*dx + dy*dy + dz*dz + (eps/extent)**2
+        r3  = r2**1.5
+        fac = G * masses[i] * grav_masses[j] / r3
+
+        force_x += fac*dx
+        force_y += fac*dy
+        force_z += fac*dz
+
+    grav_forces[i, 0] = force_x
+    grav_forces[i, 1] = force_y
+    grav_forces[i, 2] = force_z
+
+@cuda.jit
+def compute_densities(positions, masses, h, norm_dist, neighbor_list, neighbor_counts, densities):
+    i = cuda.grid(1)
+    if i >= positions.shape[0]:
         return
     
     rho = 0.0
-    C = (315*m)/(64*3.14159*h**3)
+    C = 315/(64*3.14159*h**3)
     for n in range(neighbor_counts[i]):
         j = neighbor_list[i, n]
-        rho += (1-q[i, j]**2)**3
+        rho += masses[j]*(1-norm_dist[i, j]**2)**3
     
     densities[i] = rho*C
 
-def verlet_step(r, m, h, rho, v, dt):
+@cuda.jit
+def compute_pressures(rho, rho0, k, pressures):
+    i = cuda.grid(1)
+    if i >= positions.shape[0]:
+        return
+    
+    pressures[i] = k * (rho[i] - rho0)
+
+def verlet_step(positions, masses, rho, velocities, h, k, mu eps, theta dt):
     
     
-    # Compute q from neighbors lists
-    # diff = r[:, None, :] - r[None, :, :]
+    # Compute norm_dist from neighbors lists
+    # diff = positions[:, None, :] - positions[None, :, :]
     # dist = cp.sqrt(cp.sum(diff**2, axis=2))
-    # q = dist / h
-    compute_densities(r, m, h, q, neighbor_list, neighbor_counts, rho)
+    # norm_dist = dist / h
+    compute_densities(positions, masses, h, norm_dist, neighbor_list, neighbor_counts, rho)
     return
 
 canvas = scene.SceneCanvas(keys='interactive', size=(1000, 1000), show=True)
 view = canvas.central_widget.add_view()
-scatter = visuals.Markers(pos=r, face_color='w', size=1, edge_width=0, scaling='scene')
+scatter = visuals.Markers(pos=positions, face_color='w', size=0.5, edge_width=0, scaling='scene')
 axis = visuals.XYZAxis(parent=view.scene)
 axis.transform = STTransform(scale=(1, 1, 1))
 view.add(scatter)
 view.camera = 'turntable'
-view.camera.center = np.mean(r, axis=0)
+view.camera.center = np.mean(positions, axis=0)
 
 def update(ev):
-    r, rho, v = verlet_step(r, m, h, rho, v, dt)
-    scatter.set_data(r, face_color='w', size=1, edge_width=0)
+    positions, rho, velocities = verlet_step(positions, masses, rho, velocities, H, K, MU, EPS, THETA dt)
+    scatter.set_data(positions, face_color='w', size=0.5, edge_width=0)
 
 timer = app.Timer(interval=.01, connect=update, start=True)
 
 if __name__ == '__main__':
     app.run()
 
-# equations and stuff is on cornell sph pdf
-# use barnes-hut or RT cores to handle nearest neighbor searches
-# just use vispy scatter for now
-# use barnes-hut logic from n-body to compute gravity
