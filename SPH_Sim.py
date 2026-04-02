@@ -1,4 +1,4 @@
-import sys
+import os
 import cupy as cp
 import numpy as np
 import numba as nb
@@ -29,6 +29,15 @@ masses = np.full((N), mass)
 positions = np.random.normal(size=(N, 3), scale=scale)
 rho = np.full((N), rho0)
 velocities = np.random.normal(size=(N, 3), scale=v_scale)
+halfstep_up_velocities = np.zeros_like(velocities)
+
+def prefix_aggregates(sorted_masses, sorted_positions):
+    num = len(sorted_positions)
+    prefix_mass = cp.zeros(num + 1, dtype=cp.float64)
+    prefix_mpos = cp.zeros((num + 1, 3), dtype=cp.float64)
+    prefix_mass[1:] = cp.cumsum(sorted_masses)
+    prefix_mpos[1:] = cp.cumsum(sorted_masses[:, None] * sorted_positions, axis=0)
+    return prefix_mass, prefix_mpos
 
 @cuda.jit(device=True)
 def range_mass_com(lo, hi, prefix_mass, prefix_mpos):
@@ -52,7 +61,7 @@ def _searchsorted(codes, lo, hi, val):
     return left
 
 @cuda.jit(device=True)
-def collect_interactions(i, sorted_codes, sorted_positions, prefix_mass, prefix_mpos, theta, h_norm, grav_coms, grav_masses, neighbor_list):
+def collect_interactions(i, sorted_codes, sorted_positions, sorted_real_positions, prefix_mass, prefix_mpos, theta, h_norm, grav_coms, grav_masses, neighbor_list):
     num = sorted_positions.shape[0]
     grav_count = 0
     neighbor_count = 0
@@ -89,9 +98,9 @@ def collect_interactions(i, sorted_codes, sorted_positions, prefix_mass, prefix_
                         neighbor_list[neighbor_count] = lo
                         neighbor_count += 1
                 grav_masses[grav_count] = prefix_mass[hi] - prefix_mass[lo]
-                grav_coms[grav_count, 0] = sorted_positions[lo, 0]
-                grav_coms[grav_count, 1] = sorted_positions[lo, 1]
-                grav_coms[grav_count, 2] = sorted_positions[lo, 2]
+                grav_coms[grav_count, 0] = sorted_real_positions[lo, 0]
+                grav_coms[grav_count, 1] = sorted_real_positions[lo, 1]
+                grav_coms[grav_count, 2] = sorted_real_positions[lo, 2]
                 grav_count += 1
             continue
         
@@ -123,17 +132,17 @@ def collect_interactions(i, sorted_codes, sorted_positions, prefix_mass, prefix_
     return grav_count, neighbor_count
 
 @cuda.jit
-def collect_all_interactions(sorted_codes, sorted_positions, prefix_mass, prefix_mpos, extent, theta, h_norm, grav_coms, grav_masses, grav_counts, neighbor_list, neighbor_counts):
+def collect_all_interactions(sorted_codes, sorted_positions, sorted_real_positions, prefix_mass, prefix_mpos, extent, theta, h_norm, grav_coms, grav_masses, grav_counts, neighbor_list, neighbor_counts):
     i = cuda.grid(1)
     if i >= sorted_positions.shape[0]:
         return
     
-    grav_count, neighbor_count = collect_interactions(i, sorted_codes, sorted_positions, prefix_mass, prefix_mpos, theta, h_norm, grav_coms[i], grav_masses[i], neighbor_list[i])
+    grav_count, neighbor_count = collect_interactions(i, sorted_codes, sorted_positions, sorted_real_positions, prefix_mass, prefix_mpos, theta, h_norm, grav_coms[i], grav_masses[i], neighbor_list[i])
     grav_counts[i] = grav_count
     neighbor_counts[i] = neighbor_count
 
 @cuda.jit
-def f_interact(positions, velocities, rho, pressures, masses, norm_dist, mu, h, neighbor_list, neighbor_counts, interaction_forces):
+def f_interact(positions, velocities, rho, pressures, masses, mu, h, neighbor_list, neighbor_counts, interaction_forces):
     i = cuda.grid(1)
     if i >= positions.shape[0]:
         return
@@ -150,11 +159,12 @@ def f_interact(positions, velocities, rho, pressures, masses, norm_dist, mu, h, 
         dy = positions[i, 1] - positions[j, 1]
         dz = positions[i, 2] - positions[j, 2]
         dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+        q = dist/h
         dir_x = dx / dist
         dir_y = dy / dist
         dir_z = dz / dist
 
-        smoothing = 1.0 - norm_dist[i, j]
+        smoothing = 1.0 - q
         Cj = C * masses[j] * smoothing / rho[j]
 
         pressure_term = pressures[i] / (rho[i]**2) + pressures[j] / (rho[j]**2)
@@ -172,7 +182,7 @@ def f_interact(positions, velocities, rho, pressures, masses, norm_dist, mu, h, 
     interaction_forces[i, 2] = force_z
 
 @cuda.jit
-def f_grav(positions, masses, eps, extent, grav_coms, grav_masses, grav_counts, grav_forces):
+def f_grav(positions, masses, eps, G, grav_coms, grav_masses, grav_counts, grav_forces):
     i = cuda.grid(1)
     if i >= positions.shape[0]:
         return
@@ -180,17 +190,14 @@ def f_grav(positions, masses, eps, extent, grav_coms, grav_masses, grav_counts, 
     force_x = 0.0
     force_y = 0.0
     force_z = 0.0
-    C = -45 / (3.14159 * h**6)
     
     for n in range(grav_counts[i]):
-        j = grav_coms[i, n]
-        
-        dx = positions[i, 0] - positions[j, 0]
-        dy = positions[i, 1] - positions[j, 1]
-        dz = positions[i, 2] - positions[j, 2]
-        r2  = dx*dx + dy*dy + dz*dz + (eps/extent)**2
+        dx = positions[i, 0] - grav_coms[i, n, 0]
+        dy = positions[i, 1] - grav_coms[i, n, 1]
+        dz = positions[i, 2] - grav_coms[i, n, 2]
+        r2  = dx*dx + dy*dy + dz*dz + eps**2
         r3  = r2**1.5
-        fac = G * masses[i] * grav_masses[j] / r3
+        fac = G * masses[i] * grav_masses[i, n] / r3
 
         force_x += fac*dx
         force_y += fac*dy
@@ -201,7 +208,7 @@ def f_grav(positions, masses, eps, extent, grav_coms, grav_masses, grav_counts, 
     grav_forces[i, 2] = force_z
 
 @cuda.jit
-def compute_densities(positions, masses, h, norm_dist, neighbor_list, neighbor_counts, densities):
+def compute_densities(positions, masses, h, neighbor_list, neighbor_counts, densities):
     i = cuda.grid(1)
     if i >= positions.shape[0]:
         return
@@ -210,27 +217,77 @@ def compute_densities(positions, masses, h, norm_dist, neighbor_list, neighbor_c
     C = 315/(64*3.14159*h**3)
     for n in range(neighbor_counts[i]):
         j = neighbor_list[i, n]
-        rho += masses[j]*(1-norm_dist[i, j]**2)**3
+        dx = positions[i, 0] - positions[j, 0]
+        dy = positions[i, 1] - positions[j, 1]
+        dz = positions[i, 2] - positions[j, 2]
+        dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+        q = dist / h
+        rho += masses[j]*(1-q**2)**3
     
     densities[i] = rho*C
 
 @cuda.jit
 def compute_pressures(rho, rho0, k, pressures):
     i = cuda.grid(1)
-    if i >= positions.shape[0]:
+    if i >= rho.shape[0]:
         return
     
     pressures[i] = k * (rho[i] - rho0)
 
-def verlet_step(positions, masses, rho, velocities, h, k, mu eps, theta dt):
+def leapfrog_step(positions, masses, velocities, halfstep_down_velocities, h, k, mu, eps, theta, dt):
+    threads = 256
+    blocks = (N + threads - 1) // threads
     
+    gpu_positions = cp.asarray(positions)
+    gpu_masses = cp.asarray(masses)
+    gpu_velocities = cp.asarray(velocities)
+    gpu_halfstep_down_velocities = cp.asarray(halfstep_down_velocities)
     
-    # Compute norm_dist from neighbors lists
-    # diff = positions[:, None, :] - positions[None, :, :]
-    # dist = cp.sqrt(cp.sum(diff**2, axis=2))
-    # norm_dist = dist / h
-    compute_densities(positions, masses, h, norm_dist, neighbor_list, neighbor_counts, rho)
-    return
+    norm_positions, mins, extent = mort.normalize_positions(positions)
+    codes = cp.asarray(mort.morton_codes(norm_positions, GRID))
+    sort_idx = cp.argsort(codes)
+    unsort_idx = cp.argsort(sort_idx)
+    
+    gpu_norm_positions = cp.asarray(norm_positions)
+    sorted_codes = codes[sort_idx]
+    sorted_positions = gpu_norm_positions[sort_idx]
+    sorted_real_positions = gpu_positions[sort_idx]
+    sorted_masses = gpu_masses[sort_idx]
+    sorted_velocities = gpu_velocities[sort_idx]
+    prefix_mass, prefix_mpos = prefix_aggregates(sorted_masses, sorted_positions)
+    prefix_mass_real, prefix_mpos_real = prefix_aggregates(sorted_masses, sorted_real_positions)
+    h_norm = h/extent
+    
+    grav_coms = cp.empty((N, 512, 3), dtype=cp.float64)
+    grav_masses = cp.zeros((N, 512), dtype=cp.float64)
+    grav_counts = cp.zeros((N), dtype=cp.int32)
+    neighbor_list = cp.empty((N, 64), dtype=cp.int32)
+    neighbor_counts = cp.zeros((N), dtype=cp.int32)
+    
+    collect_all_interactions[blocks, threads](sorted_codes, sorted_positions, sorted_real_positions, prefix_mass, prefix_mpos_real, extent, theta, h_norm, grav_coms, grav_masses, grav_counts, neighbor_list, neighbor_counts)
+    
+    rho = cp.zeros((N))
+    compute_densities[blocks, threads](sorted_real_positions, sorted_masses, h, neighbor_list, neighbor_counts, rho)
+    pressures = cp.zeros((N))
+    compute_pressures[blocks, threads](rho, rho0, k, pressures)
+    
+    interaction_forces = cp.zeros((N, 3))
+    grav_forces = cp.zeros((N, 3))
+    f_interact[blocks, threads](sorted_real_positions, sorted_velocities, rho, pressures, sorted_masses, mu, h, neighbor_list, neighbor_counts, interaction_forces)
+    f_grav[blocks, threads](sorted_real_positions, sorted_masses, eps, G, grav_coms, grav_masses, grav_counts, grav_forces)
+    accelerations = (interaction_forces+grav_forces)/rho
+    unsorted_accelerations = accelerations[unsort_idx]
+    
+    gpu_halfstep_up_velocities = gpu_halfstep_down_velocities + unsorted_accelerations*dt
+    gpu_new_velocities = gpu_halfstep_up_velocities + unsorted_accelerations*dt
+    gpu_new_positions = gpu_positions + gpu_halfstep_up_velocities*dt
+    
+    new_positions = cp.asnumpy(gpu_new_positions)
+    new_masses = cp.asnumpy(gpu_masses)
+    new_velocities = cp.asnumpy(gpu_new_velocities)
+    halfstep_up_velocities = cp.asnumpy(gpu_halfstep_up_velocities)
+
+    return new_positions, new_masses, new_velocities, halfstep_up_velocities
 
 canvas = scene.SceneCanvas(keys='interactive', size=(1000, 1000), show=True)
 view = canvas.central_widget.add_view()
@@ -242,7 +299,8 @@ view.camera = 'turntable'
 view.camera.center = np.mean(positions, axis=0)
 
 def update(ev):
-    positions, rho, velocities = verlet_step(positions, masses, rho, velocities, H, K, MU, EPS, THETA dt)
+    global positions, masses, velocities, halfstep_up_velocities
+    positions, masses, velocities, halfstep_up_velocities = leapfrog_step(positions, masses, velocities, halfstep_up_velocities, H, K, MU, EPS, THETA, dt)
     scatter.set_data(positions, face_color='w', size=0.5, edge_width=0)
 
 timer = app.Timer(interval=.01, connect=update, start=True)
