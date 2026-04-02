@@ -11,18 +11,19 @@ from vispy.scene import visuals
 from Constants import Gravity as g
 from vispy.visuals.transforms import STTransform
 
-G       = 6.674e-11
-dt      = 1
-N       = 50
-EPS     = 0.75
-scale   = 1
-v_scale = 0
+#G       = 6.674e-11
+G       = 1
+dt      = 0.01
+N       = 50000
+EPS     = 1
+scale   = 100
+v_scale = 10
 rho0    = 1
-mass    = 1
-K       = 1
-MU      = 1
+mass    = 100
+K       = 5
+MU      = 1000
 H       = 1
-THETA   = 0.5
+THETA   = 1
 GRID    = 1024
 
 masses = np.full((N), mass)
@@ -199,9 +200,9 @@ def f_grav(positions, masses, eps, G, grav_coms, grav_masses, grav_counts, grav_
         r3  = r2**1.5
         fac = G * masses[i] * grav_masses[i, n] / r3
 
-        force_x += fac*dx
-        force_y += fac*dy
-        force_z += fac*dz
+        force_x -= fac*dx
+        force_y -= fac*dy
+        force_z -= fac*dz
 
     grav_forces[i, 0] = force_x
     grav_forces[i, 1] = force_y
@@ -258,8 +259,8 @@ def leapfrog_step(positions, masses, velocities, halfstep_down_velocities, h, k,
     prefix_mass_real, prefix_mpos_real = prefix_aggregates(sorted_masses, sorted_real_positions)
     h_norm = h/extent
     
-    grav_coms = cp.empty((N, 512, 3), dtype=cp.float64)
-    grav_masses = cp.zeros((N, 512), dtype=cp.float64)
+    grav_coms = cp.empty((N, 2048, 3), dtype=cp.float64)
+    grav_masses = cp.zeros((N, 2048), dtype=cp.float64)
     grav_counts = cp.zeros((N), dtype=cp.int32)
     neighbor_list = cp.empty((N, 64), dtype=cp.int32)
     neighbor_counts = cp.zeros((N), dtype=cp.int32)
@@ -275,12 +276,16 @@ def leapfrog_step(positions, masses, velocities, halfstep_down_velocities, h, k,
     grav_forces = cp.zeros((N, 3))
     f_interact[blocks, threads](sorted_real_positions, sorted_velocities, rho, pressures, sorted_masses, mu, h, neighbor_list, neighbor_counts, interaction_forces)
     f_grav[blocks, threads](sorted_real_positions, sorted_masses, eps, G, grav_coms, grav_masses, grav_counts, grav_forces)
-    accelerations = (interaction_forces+grav_forces)/rho
+    accelerations = (interaction_forces+grav_forces)/sorted_masses[:, None]
     unsorted_accelerations = accelerations[unsort_idx]
     
     gpu_halfstep_up_velocities = gpu_halfstep_down_velocities + unsorted_accelerations*dt
     gpu_new_velocities = gpu_halfstep_up_velocities + unsorted_accelerations*dt
     gpu_new_positions = gpu_positions + gpu_halfstep_up_velocities*dt
+    
+    com_velocity = cp.sum(gpu_masses[:,None] * gpu_new_velocities, axis=0) / cp.sum(gpu_masses)
+    gpu_new_velocities -= com_velocity
+    gpu_halfstep_up_velocities -= com_velocity
     
     new_positions = cp.asnumpy(gpu_new_positions)
     new_masses = cp.asnumpy(gpu_masses)
