@@ -18,12 +18,12 @@ dt      = 0.001
 N       = 1000
 EPS     = 20
 scale   = 1
-v_scale = 100
+v_scale = 0
 rho0    = 1
-K       = 1e6
-MU      = 1
-GAMMA   = 4
-H       = 15
+K       = 1e9
+MU      = 0.3
+GAMMA   = 1
+#H       = 150
 THETA   = 0.8
 GRID    = 1024
 
@@ -44,7 +44,7 @@ def sphere_lattice(N_target, inner_radius, outer_radius):
     
     return points
 
-inner_radius = 25.0
+inner_radius = 10.0
 outer_radius = 50.0
 volume = (4/3)*np.pi*(outer_radius**3 - inner_radius**3)
 
@@ -58,7 +58,7 @@ halfstep_up_velocities = np.zeros_like(velocities)
 
 volume = (4/3) * np.pi * outer_radius**3 - (4/3) * np.pi * inner_radius**3
 avg_spacing = (volume / N) ** (1/3)
-#H = 100 * avg_spacing
+H = 4 * avg_spacing
 
 def prefix_aggregates(sorted_masses, sorted_positions):
     num = len(sorted_positions)
@@ -179,7 +179,8 @@ def f_interact(positions, velocities, rho, pressures, masses, mu, h, neighbor_li
     force_x = 0.0
     force_y = 0.0
     force_z = 0.0
-    C = -45 / (3.14159 * h**6)
+    C_spiky = -45 / (3.14159 * h**6)
+    C_visc = 45 / (3.14159 * h**3)
     
     for n in range(neighbor_counts[i]):
         j = neighbor_list[i, n]
@@ -194,17 +195,20 @@ def f_interact(positions, velocities, rho, pressures, masses, mu, h, neighbor_li
         dir_z = dz / dist
 
         smoothing = 1.0 - q
-        Cj = C * masses[j] * smoothing / rho[j]
+        pressure_coefficient = C_spiky * masses[j] * smoothing ** 2
+        pressure_term = pressure_coefficient * (pressures[i] / (rho[i]**2) + pressures[j] / (rho[j]**2))
+        
+        px_term = pressure_term * dir_x
+        py_term = pressure_term * dir_y
+        pz_term = pressure_term * dir_z
 
-        pressure_term = pressures[i] / (rho[i]**2) + pressures[j] / (rho[j]**2)
+        vx_term = C_visc * mu * smoothing * (velocities[j, 0] - velocities[i, 0])
+        vy_term = C_visc * mu * smoothing * (velocities[j, 1] - velocities[i, 1])
+        vz_term = C_visc * mu * smoothing * (velocities[j, 2] - velocities[i, 2])
 
-        vx_term = mu * smoothing * (velocities[j, 0] - velocities[i, 0])
-        vy_term = mu * smoothing * (velocities[j, 1] - velocities[i, 1])
-        vz_term = mu * smoothing * (velocities[j, 2] - velocities[i, 2])
-
-        force_x += Cj * (smoothing * pressure_term * dir_x - vx_term)
-        force_y += Cj * (smoothing * pressure_term * dir_y - vy_term)
-        force_z += Cj * (smoothing * pressure_term * dir_z - vz_term)
+        force_x -= px_term + vx_term
+        force_y -= py_term + vy_term
+        force_z -= pz_term + vz_term
 
     interaction_forces[i, 0] = force_x * masses[i]
     interaction_forces[i, 1] = force_y * masses[i]
@@ -237,13 +241,14 @@ def f_grav(positions, masses, eps, G, grav_coms, grav_masses, grav_counts, grav_
     grav_forces[i, 2] = force_z
 
 @cuda.jit
-def compute_densities(positions, masses, h, neighbor_list, neighbor_counts, densities):
+def compute_densities(positions, masses, h, neighbor_list, neighbor_counts, densities, near_densities):
     i = cuda.grid(1)
     if i >= positions.shape[0]:
         return
     
-    C = 315/(64*3.14159*h**3)
+    C = 315/(64*3.14159*h**9)
     rho = masses[i]
+    rho_near = 0.0
     for n in range(neighbor_counts[i]):
         j = neighbor_list[i, n]
         dx = positions[i, 0] - positions[j, 0]
@@ -252,18 +257,21 @@ def compute_densities(positions, masses, h, neighbor_list, neighbor_counts, dens
         dist = math.sqrt(dx*dx + dy*dy + dz*dz)
         q = dist / h
         rho += masses[j]*(1-q**2)**3
+        poly6 = (1 - q**2)**2
+        rho_near += masses[j] * poly6 * poly6
     
     densities[i] = rho*C
+    near_densities[i] += rho_near * C
 
 @cuda.jit
-def compute_pressures(rho, rho0, k, gamma, pressures):
+def compute_pressures(rho, rho_near, rho0, k, gamma, pressures):
     i = cuda.grid(1)
     if i >= rho.shape[0]:
         return
-    # Linear Pressure
-    #pressures[i] = k * abs(rho[i] - rho0)
-    # Polytropic Pressure
-    pressures[i] = k * rho[i] ** gamma
+    # Polytropic Pressure Equation
+    k_near = k * 0.05
+    rho_near_0 = rho0 * 0.3
+    pressures[i] = k * ((rho[i] / rho0) ** gamma - 1) + k_near * (rho_near[i] / rho_near_0)
 
 def leapfrog_step(positions, masses, velocities, halfstep_down_velocities, h, k, gamma, mu, eps, theta, dt):
     threads = 256
@@ -301,9 +309,10 @@ def leapfrog_step(positions, masses, velocities, halfstep_down_velocities, h, k,
     print(f"extent: {extent}, h_norm: {h_norm}")
     
     rho = cp.zeros((N))
-    compute_densities[blocks, threads](sorted_real_positions, sorted_masses, h, neighbor_list, neighbor_counts, rho)
+    rho_near = cp.zeros((N))
+    compute_densities[blocks, threads](sorted_positions, sorted_masses, h_norm, neighbor_list, neighbor_counts, rho, rho_near)
     pressures = cp.zeros((N))
-    compute_pressures[blocks, threads](rho, rho0, k, gamma, pressures)
+    compute_pressures[blocks, threads](rho, rho_near, rho0, k, gamma, pressures)
     
     interaction_forces = cp.zeros((N, 3))
     grav_forces = cp.zeros((N, 3))
@@ -313,7 +322,7 @@ def leapfrog_step(positions, masses, velocities, halfstep_down_velocities, h, k,
     unsorted_accelerations = accelerations[unsort_idx]
     
     gpu_halfstep_up_velocities = gpu_halfstep_down_velocities + unsorted_accelerations*dt
-    gpu_new_velocities = gpu_halfstep_up_velocities + unsorted_accelerations*dt
+    gpu_new_velocities = gpu_halfstep_up_velocities + unsorted_accelerations * dt * 0.5
     gpu_new_positions = gpu_positions + gpu_halfstep_up_velocities*dt
     
     #com_velocity = cp.sum(gpu_masses[:,None] * gpu_new_velocities, axis=0) / cp.sum(gpu_masses)
@@ -331,7 +340,7 @@ def leapfrog_step(positions, masses, velocities, halfstep_down_velocities, h, k,
 canvas = scene.SceneCanvas(keys='interactive', size=(1000, 1000), show=True)
 view = canvas.central_widget.add_view()
 initial_colors = np.ones((N, 4)) * [0.3, 0.1, 0.8, 0.5]
-scatter = visuals.Markers(pos=positions, face_color=initial_colors, size=0.5, edge_width=0, scaling='scene')
+scatter = visuals.Markers(pos=positions, face_color=initial_colors, size=2, edge_width=0, scaling='scene')
 axis = visuals.XYZAxis(parent=view.scene)
 axis.transform = STTransform(scale=(1, 1, 1))
 view.add(scatter)
@@ -346,14 +355,13 @@ def update(ev):
     rho_norm = np.clip(rho_cpu / (rho0 * 2), 0, 1)
     print(f"rho min: {rho_cpu.min():.2f}, max: {rho_cpu.max():.2f}, std: {rho_cpu.std():.4f}")
     print(f"rho_norm min: {rho_norm.min():.4f}, max: {rho_norm.max():.4f}")
-    sizes = rho_norm * 2 # denser = bigger
     colors = np.zeros((N, 4))
     colors[:, 0] = rho_norm # red (increases with density)
     colors[:, 1] = 0.3 * (1 - rho_norm)  # green (decreases with density)
     colors[:, 2] = 0.8 * (1 - rho_norm)  # blue (decreases with density)
     colors[:, 3] = 0.7  # constant alpha    
     
-    scatter.set_data(positions, face_color=colors, size=sizes, edge_width=0)
+    scatter.set_data(positions, face_color=colors, size=2, edge_width=0)
 
 timer = app.Timer(interval=.01, connect=update, start=True)
 

@@ -13,16 +13,16 @@ from Constants import Gravity as g
 from vispy.visuals.transforms import STTransform
 
 #G       = 6.674e-11
-G       = 100
+G       = 10
 dt      = 0.01
-N       = 10000
+N       = 1000
 scale   = 10
-v_scale = 100
+v_scale = 0
 rho0    = 1
 K       = 1e6
-MU      = -3e2
+MU      = 1
 GAMMA   = 7
-H       = 15
+H       = 3
 THETA   = 0.8
 RESTITUTION = 1
 GRID    = 1024
@@ -44,7 +44,7 @@ def sphere_lattice(N_target, inner_radius, outer_radius):
     
     return points
 
-inner_radius = 25.0
+inner_radius = 0.0
 outer_radius = 50.0
 volume = (4/3)*np.pi*(outer_radius**3 - inner_radius**3)
 
@@ -196,7 +196,7 @@ def f_interact(positions, velocities, rho, pressures, masses, mu, h, neighbor_li
         smoothing = 1.0 - q
         Cj = C * masses[j] * smoothing / rho[j]
 
-        pressure_term = pressures[i] / (rho[i]**2) + pressures[j] / (rho[j]**2)
+        pressure_term = -1 * (pressures[i] / (rho[i]**2) + pressures[j] / (rho[j]**2))
 
         vx_term = mu * smoothing * (velocities[j, 0] - velocities[i, 0])
         vy_term = mu * smoothing * (velocities[j, 1] - velocities[i, 1])
@@ -216,7 +216,7 @@ def compute_densities(positions, masses, h, neighbor_list, neighbor_counts, dens
     if i >= positions.shape[0]:
         return
     
-    C = 315/(64*3.14159*h**3)
+    C = 315/(64*3.14159*h**9)
     rho = masses[i]
     for n in range(neighbor_counts[i]):
         j = neighbor_list[i, n]
@@ -237,7 +237,7 @@ def compute_pressures(rho, rho0, k, gamma, pressures):
     # Linear Pressure
     #pressures[i] = k * abs(rho[i] - rho0)
     # Polytropic Pressure
-    pressures[i] = k * rho[i] ** gamma
+    pressures[i] = k * (rho[i] / rho0) ** gamma
 
 @cuda.jit
 def apply_wall_collisions(positions, velocities, box_min, box_max, restitution):
@@ -299,11 +299,11 @@ def leapfrog_step(positions, masses, velocities, halfstep_down_velocities, dt):
     unsorted_accelerations = accelerations[unsort_idx]
     
     gpu_halfstep_up_velocities = gpu_halfstep_down_velocities + unsorted_accelerations*dt
-    gpu_new_velocities = gpu_halfstep_up_velocities + unsorted_accelerations*dt
+    gpu_new_velocities = gpu_halfstep_up_velocities + unsorted_accelerations * dt * 0.5
     gpu_new_positions = gpu_positions + gpu_halfstep_up_velocities*dt
     
-    box_min = cp.array([-100, -100, -100])
-    box_max = cp.array([100, 100, 10000])
+    box_min = cp.array([-50, -50, -50])
+    box_max = cp.array([50, 50, 50])
     apply_wall_collisions[blocks, threads](gpu_new_positions, gpu_halfstep_up_velocities, box_min, box_max, RESTITUTION)
     
     new_positions = cp.asnumpy(gpu_new_positions)
