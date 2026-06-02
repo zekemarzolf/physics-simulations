@@ -13,6 +13,9 @@ rng = np.random.default_rng()
 #temperatures = rng.random(size=1000, dtype=np.float32) * 100
 temperatures = np.full(N, 20, dtype=np.float32)
 temperatures[450:550] = 100.0
+temperatures[0:60] = 100.0
+temperatures[200:210] = 1000.0
+temperatures[800:830] = 80.0
 
 def spectral_laplacian(temperatures):
     F_temps = np.fft.fft(temperatures)
@@ -39,17 +42,17 @@ def finite_laplacian(temperatures):
     return laplacian
 
 
-colors = ['blue', 'red']
-controls = [0.0, 1.0]
+colors = ['blue', 'red', 'white']
+controls = [0.0, 0.1, 1.0]
 cmap = color.Colormap(colors, controls=controls)
 
 canvas = scene.SceneCanvas(keys='interactive', size=(1000, 200), show=True)
 grid = canvas.central_widget.add_grid()
 view = grid.add_view(row=0, col=0)
-image = scene.visuals.Image(temperatures[np.newaxis, :].astype(np.float32), cmap=cmap, clim=(0.0, 100.0), parent=view.scene)
+image = scene.visuals.Image(temperatures[np.newaxis, :].astype(np.float32), cmap=cmap, clim=(0.0, 1000.0), parent=view.scene)
 view.camera = scene.cameras.PanZoomCamera(aspect=None)
 view.camera.set_range(x=(0, len(temperatures)), y=(0, 1))
-colorbar = scene.widgets.ColorBarWidget(cmap=cmap, orientation='bottom', clim = (0.0, 100.0), border_width=1.0)
+colorbar = scene.widgets.ColorBarWidget(cmap=cmap, orientation='bottom', clim = (0.0, 1000.0), border_width=1.0)
 grid.add_widget(colorbar, row=1, col=0)
 
 def update(ev):
@@ -60,7 +63,7 @@ def update(ev):
     image.set_data(temperatures[np.newaxis, :].astype(np.float32))
     canvas.update()
 
-timer = app.Timer(interval='auto', connect=update, start=True)
+timer = app.Timer(interval=0.01, connect=update, start=True)
 
 if __name__ == '__main__':
     app.run()
