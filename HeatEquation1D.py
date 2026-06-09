@@ -1,5 +1,6 @@
 import sys
 import numpy as np
+import cupy as cp
 from vispy import plot as vp
 from vispy import scene, app, color
 from scipy.linalg import solve_banded
@@ -25,10 +26,10 @@ ab = np.array([np.append(0, -CFL * np.ones(N-1)),
                 np.append(-CFL * np.ones(N-1), 0)])
 
 def spectral_laplacian(temperatures):
-    F_temps = np.fft.fft(temperatures)
-    k = 2 * np.pi * np.fft.fftfreq(N, 1.0)
-    F_temps_new = np.exp(-(k**2) * alpha * dt) * F_temps
-    return np.fft.ifft(F_temps_new).real
+    F_temps = cp.fft.fft(temperatures)
+    k = 2 * cp.pi * cp.fft.fftfreq(N, 1.0)
+    F_temps_new = cp.exp(-(k**2) * alpha * dt) * F_temps
+    return cp.fft.ifft(F_temps_new).real
 
 def crank_nicolson(temperatures):
     b = CFL * temperatures[:-2] + (1 - 2 * CFL) * temperatures[1:-1] + CFL * temperatures[2:]
@@ -45,14 +46,15 @@ cmap = color.Colormap(colors, controls=controls)
 canvas = scene.SceneCanvas(keys='interactive', size=(1000, 200), show=True)
 grid = canvas.central_widget.add_grid()
 view = grid.add_view(row=0, col=0)
-image = scene.visuals.Image(temperatures[np.newaxis, :].astype(np.float32), cmap=cmap, clim=(0.0, 1000.0), parent=view.scene)
+image = scene.visuals.Image(temperatures[np.newaxis, :].astype(np.float32), cmap='viridis', clim=(0.0, 1000.0), parent=view.scene)
 view.camera = scene.cameras.PanZoomCamera(aspect=None)
 view.camera.set_range(x=(0, len(temperatures)), y=(0, 1))
 
 def update(ev):
     global temperatures
     #temperatures = crank_nicolson(temperatures)
-    temperatures = spectral_laplacian(temperatures)
+    gpu_temps = cp.asarray(temperatures)
+    temperatures = cp.asnumpy(spectral_laplacian(gpu_temps))
     image.set_data(temperatures[np.newaxis, :].astype(np.float32))
     canvas.update()
 

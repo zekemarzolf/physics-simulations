@@ -1,4 +1,5 @@
 import numpy as np
+import cupy as cp
 from vispy import plot as vp
 from vispy import scene, app, color
 from scipy import ndimage
@@ -27,14 +28,14 @@ def random_surface():
 #temperatures = random_surface()
 
 def spectral_laplacian(temperatures):
-    F_temps = np.fft.fft2(temperatures)
+    F_temps = cp.fft.fft2(temperatures)
     Ny, Nx = temperatures.shape
-    kx = np.fft.fftfreq(Nx, 1.0)
-    ky = np.fft.fftfreq(Ny, 1.0)
+    kx = cp.fft.fftfreq(Nx, 1.0)
+    ky = cp.fft.fftfreq(Ny, 1.0)
     KX, KY = np.meshgrid(kx, ky)
-    K2 = (2 * np.pi * KX)**2 + (2 * np.pi * KY)**2
-    F_new_temps = np.exp(alpha * -K2 * dt) * F_temps
-    new_temps = np.fft.ifft2(F_new_temps).real
+    K2 = (2 * cp.pi * KX)**2 + (2 * cp.pi * KY)**2
+    F_new_temps = cp.exp(alpha * -K2 * dt) * F_temps
+    new_temps = cp.fft.ifft2(F_new_temps).real
     return new_temps
 
 colors = ['blue', 'red', 'pink']
@@ -52,7 +53,8 @@ view.camera.set_range(x=(0, temperatures.shape[0]), y=(0, temperatures.shape[1])
 
 def update(ev):
     global temperatures
-    temperatures = spectral_laplacian(temperatures)
+    gpu_temps = cp.asarray(temperatures)
+    temperatures = cp.asnumpy(spectral_laplacian(gpu_temps))
     image.set_data(temperatures.astype(np.float32))
     canvas.update()
 
