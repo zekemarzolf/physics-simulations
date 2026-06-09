@@ -4,7 +4,7 @@ from vispy import plot as vp
 from vispy import scene, app, color
 from scipy.linalg import solve_banded
 
-dt = 0.1
+dt = 1
 N = 1000
 conductivity = 1
 rho = 1
@@ -25,13 +25,10 @@ ab = np.array([np.append(0, -CFL * np.ones(N-1)),
                 np.append(-CFL * np.ones(N-1), 0)])
 
 def spectral_laplacian(temperatures):
-    print(np.isnan(temperatures).any())
     F_temps = np.fft.fft(temperatures)
-    print(np.isnan(F_temps).any())
     k = 2 * np.pi * np.fft.fftfreq(N, 1.0)
-    F_laplacian = -(k**2) * F_temps
-    real_laplacian = np.fft.ifft(F_laplacian).real
-    return real_laplacian
+    F_temps_new = np.exp(-(k**2) * alpha * dt) * F_temps
+    return np.fft.ifft(F_temps_new).real
 
 def crank_nicolson(temperatures):
     b = CFL * temperatures[:-2] + (1 - 2 * CFL) * temperatures[1:-1] + CFL * temperatures[2:]
@@ -55,8 +52,7 @@ view.camera.set_range(x=(0, len(temperatures)), y=(0, 1))
 def update(ev):
     global temperatures
     #temperatures = crank_nicolson(temperatures)
-    laplace = spectral_laplacian(temperatures)
-    temperatures = np.exp(laplace*dt) * temperatures
+    temperatures = spectral_laplacian(temperatures)
     image.set_data(temperatures[np.newaxis, :].astype(np.float32))
     canvas.update()
 
