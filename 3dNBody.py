@@ -12,7 +12,7 @@ from vispy.visuals.transforms import STTransform
 
 G     = 6.674e-11
 dt    = 1
-N     = 500
+N     = 1000
 eps   = 0.75
 scale = 2
 mass = 1e5

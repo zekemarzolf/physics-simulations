@@ -10,7 +10,7 @@ a = 0.2
 b = 0.2
 c = 14
 
-positions = cp.random.normal(size=(N, 3), scale=0.5) + cp.array([[-5.0, 0.0, 0.0]])
+positions = cp.random.normal(size=(N, 3), scale=0.1) + cp.array([[-5.0, 0.0, 0.0]])
 
 def timestep(positions, dt):
     x_velocities = (positions[:, 1] + positions[:, 2]) * -1

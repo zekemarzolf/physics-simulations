@@ -10,7 +10,7 @@ SIGMA = 10
 RHO = 28
 BETA = 8/3
 
-positions = cp.random.normal(size=(N, 3), scale=0.1) 
+positions = cp.random.normal(size=(N, 3), scale=0.001) 
 
 def timestep(positions, dt):
     x_velocities = SIGMA * (positions[:, 1] - positions[:, 0])
@@ -31,7 +31,7 @@ axis = visuals.XYZAxis(parent=view.scene)
 axis.transform = STTransform(scale=(1, 1, 1))
 view.add(scatter)
 view.camera = 'turntable'
-view.camera.distance = 50
+view.camera.distance = 100
 view.camera.center = (0, 0, 20)
 
 def update(ev):

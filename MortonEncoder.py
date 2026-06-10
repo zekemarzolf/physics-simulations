@@ -1,6 +1,8 @@
 import numpy as np
+import cupy as cp
 import numba as nb
 from numba import njit
+from numba import cuda
 
 @njit
 def _spread_bits(v):

@@ -14,16 +14,16 @@ from vispy.visuals.transforms import STTransform
 
 #G       = 6.674e-11
 G       = 1
-dt      = 0.001
-N       = 1000
+dt      = 0.01
+N       = 20000
 EPS     = 20
 scale   = 1
 v_scale = 0
-rho0    = 1
+rho0    = 0.5
 K       = 1e9
-MU      = 0.3
+MU      = 0.5
 GAMMA   = 1
-#H       = 150
+H       = 0.5
 THETA   = 0.8
 GRID    = 1024
 
@@ -45,10 +45,11 @@ def sphere_lattice(N_target, inner_radius, outer_radius):
     return points
 
 inner_radius = 10.0
-outer_radius = 50.0
+outer_radius = 100.0
 volume = (4/3)*np.pi*(outer_radius**3 - inner_radius**3)
 
-positions = sphere_lattice(N, inner_radius=10.0, outer_radius=50.0)
+#positions = sphere_lattice(N, inner_radius=10.0, outer_radius=50.0)
+positions = np.random.normal(size=(N, 3), scale=100)
 N = len(positions)
 mass  = rho0 * volume / N
 masses = np.full((N), mass)
@@ -58,7 +59,7 @@ halfstep_up_velocities = np.zeros_like(velocities)
 
 volume = (4/3) * np.pi * outer_radius**3 - (4/3) * np.pi * inner_radius**3
 avg_spacing = (volume / N) ** (1/3)
-H = 4 * avg_spacing
+#H = 4 * avg_spacing
 
 def prefix_aggregates(sorted_masses, sorted_positions):
     num = len(sorted_positions)
